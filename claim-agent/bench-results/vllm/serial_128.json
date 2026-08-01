@@ -1,0 +1,43 @@
+{
+  "model": "/models/Qwen3.6-27B-Quark-W8A8-INT8",
+  "backend": "vLLM 0.26.0+rocm723 (HIP/ROCm)",
+  "dtype": "float16",
+  "gpu": "AMD Radeon Pro W7900 (gfx1100, ROCm 7.2.4, 48GB)",
+  "timestamp": "2026-07-28",
+  "config": {"enforce_eager": true, "kv_cache_dtype": "fp8_e4m3", "max_model_len": 200000, "mtp": 2, "gpu_memory_utilization": 0.9},
+  "results": {
+    "max_tokens_64": {
+      "n": 5,
+      "requests": [
+        {"ttft_s": 1.54, "total_s": 7.97, "n_tokens": 64, "decode_tok_s": 10.0},
+        {"ttft_s": 0.19, "total_s": 6.66, "n_tokens": 64, "decode_tok_s": 9.9},
+        {"ttft_s": 0.19, "total_s": 6.65, "n_tokens": 64, "decode_tok_s": 9.9},
+        {"ttft_s": 0.19, "total_s": 6.65, "n_tokens": 64, "decode_tok_s": 9.9},
+        {"ttft_s": 0.19, "total_s": 6.65, "n_tokens": 64, "decode_tok_s": 9.9}
+      ],
+      "summary": {"avg_ttft_s": 0.46, "avg_total_s": 6.92, "avg_throughput_tok_s": 9.9}
+    },
+    "max_tokens_128": {
+      "n": 5,
+      "requests": [
+        {"ttft_s": 0.20, "total_s": 14.22, "n_tokens": 128, "decode_tok_s": 9.1},
+        {"ttft_s": 0.29, "total_s": 14.46, "n_tokens": 128, "decode_tok_s": 9.0},
+        {"ttft_s": 0.35, "total_s": 14.85, "n_tokens": 128, "decode_tok_s": 8.8},
+        {"ttft_s": 0.35, "total_s": 15.14, "n_tokens": 128, "decode_tok_s": 8.7},
+        {"ttft_s": 0.36, "total_s": 14.24, "n_tokens": 128, "decode_tok_s": 9.2}
+      ],
+      "summary": {"avg_ttft_s": 0.31, "avg_total_s": 14.58, "avg_throughput_tok_s": 9.0}
+    },
+    "max_tokens_512": {
+      "n": 5,
+      "requests": [
+        {"ttft_s": 0.28, "total_s": 58.23, "n_tokens": 512, "decode_tok_s": 8.8},
+        {"ttft_s": 0.33, "total_s": 57.44, "n_tokens": 512, "decode_tok_s": 9.0},
+        {"ttft_s": 0.20, "total_s": 55.48, "n_tokens": 512, "decode_tok_s": 9.3},
+        {"ttft_s": 0.19, "total_s": 55.51, "n_tokens": 512, "decode_tok_s": 9.3},
+        {"ttft_s": 0.20, "total_s": 55.49, "n_tokens": 512, "decode_tok_s": 9.3}
+      ],
+      "summary": {"avg_ttft_s": 0.24, "avg_total_s": 56.43, "avg_throughput_tok_s": 9.1}
+    }
+  }
+}
