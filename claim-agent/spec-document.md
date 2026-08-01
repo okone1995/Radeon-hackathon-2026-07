@@ -13,6 +13,8 @@ Full source: [repo link]
 
 ## Submission Contents
 
+🎬 **Demo Video:** https://www.bilibili.com/video/BV1Xm3U69ESG
+
 | Requirement | File |
 |-------------|------|
 | Project Specification Document | `claim-agent/spec-document.pdf` (and `.md` source) |
