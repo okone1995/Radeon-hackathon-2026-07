@@ -107,11 +107,13 @@ vllm serve /models/Qwen3.6-27B-Quark-W8A8-INT8 \
 
 ### 3.1 串行文本吞吐 (bench.py --n 5)
 
-| max_tokens | llama.cpp | vLLM (eager) |
+| max_tokens | llama.cpp | vLLM (eager, float16 KV) |
 |:---------:|:---------:|:------------:|
-| 64 | **41.0 tok/s** | 9.9 tok/s |
-| 128 | **41.9 tok/s** | 9.0 tok/s |
-| 512 | **35.4 tok/s** | 9.1 tok/s |
+| 64 | **41.0 tok/s** | 12.5 tok/s |
+| 128 | **41.9 tok/s** | 12.3 tok/s |
+| 512 | **35.4 tok/s** | 11.9 tok/s |
+
+> vLLM 已优化（2026-08-03）：去掉 FP8 KV Cache 模拟（RDNA 无 FP8 硬件）+ 升级 v0.26.0 + `--skip-mm-profiling`，单请求从 9.0 提升到 12.3 tok/s (+37%)。
 
 ### 3.2 TTFT（首 Token 延迟）
 
@@ -119,12 +121,12 @@ vllm serve /models/Qwen3.6-27B-Quark-W8A8-INT8 \
 
 | # | llama.cpp | vLLM |
 |--:|:---------:|:----:|
-| 1 | 0.10s | 0.20s |
-| 2 | **14.17s** | 0.29s |
-| 3 | **14.32s** | 0.35s |
-| 4 | **14.12s** | 0.35s |
-| 5 | **14.95s** | 0.36s |
-| avg | 11.53s | **0.31s** |
+| 1 | 0.10s | 0.17s |
+| 2 | **14.17s** | 0.17s |
+| 3 | **14.32s** | 0.17s |
+| 4 | **14.12s** | 0.17s |
+| 5 | **14.95s** | 0.17s |
+| avg | 11.53s | **0.17s** |
 
 > vLLM TTFT 极低且稳定，llama.cpp 存在 KV Cache 导致的大幅波动（首次 0.1s，后续 ~14s）
 
@@ -132,15 +134,15 @@ vllm serve /models/Qwen3.6-27B-Quark-W8A8-INT8 \
 
 | C | llama.cpp 聚合 | 加速比 | vLLM 聚合 | 加速比 | vLLM/llama |
 |:--:|:---:|:---:|:---:|:---:|:---:|
-| 1 | 10.0 | 1.00x | 9.6 | 1.00x | 0.96x |
-| 2 | 16.3 | 1.63x | 18.1 | 1.89x | 1.11x |
-| 4 | 20.6 | 2.06x | 35.1 | 3.66x | 1.70x |
-| 8 | 21.9 | 2.19x | **62.9** | **6.55x** | **2.87x** |
+| 1 | 10.0 | 1.00x | 11.4 | 1.00x | 1.14x |
+| 2 | 16.3 | 1.63x | 21.9 | 1.92x | 1.34x |
+| 4 | 20.6 | 2.06x | 45.0 | 3.95x | 2.18x |
+| 8 | 21.9 | 2.19x | **82.1** | **7.20x** | **3.75x** |
 
 ```text
 聚合吞吐趋势 (tok/s):
 
-vLLM:        ██████████████████████████████████████████████████████████████▌ 62.9
+vLLM:        ██████████████████████████████████████████████████████████████████████████▌ 82.1
 llama.cpp:   ██████████████████████▏ 21.9
 ```
 
@@ -214,13 +216,16 @@ WARNING [jit_monitor.py:135] Triton kernel JIT compilation during inference:
 
 W8A8 理论计算量更小，但 **每层反量化开销 + Triton JIT 层开销** 抵消了这点优势。MI300X 上 Triton INT8 kernel 经过 AMD 深度优化，而 RDNA W7900 尚未获得同等对待。
 
-### 4.4 启用 torch.compile / CUDA Graph 为何更慢？
+### 4.4 优化变量实测对比（2026-08-03）
 
 | 配置 | 吞吐 | 原因 |
 |------|:----:|------|
-| enforce_eager | 9.0 tok/s | 基准 |
-| + torch.compile | 9.1 tok/s | 已缓存编译图，无额外增益 |
-| + CUDA Graph | 2.6 tok/s | Qwen3 48 层 GDN 吃满 Mamba 状态缓存，max_num_seqs 被迫降为 8，图捕获尺寸从 51 → 5，并发退化为串行 |
+| 原配置 (0.25.1 + FP8 KV 模拟) | 9.0 tok/s | FP8 KV cache 在 RDNA 上纯软件模拟 |
+| **float16 KV + enforce_eager + 0.26.0** | **12.3 tok/s** | 杀掉 FP8 模拟；0.26.0 修复 mm profiling 卡死 |
+| + TORCH_SDPA | 12.4 tok/s | 无显著差异（GDN 线性注意力不走标准 attn kernel） |
+| + bf16 计算 | 12.2 tok/s | 无差异 |
+| + MTP 投机 (5 tokens) | 8.4 tok/s | 量化模型上接受率 **0%**，纯负担 |
+| + CUDA Graph (关 enforce_eager) | 2.6 tok/s | Qwen3 48 层 GDN 吃满 Mamba 状态缓存，max_num_seqs 被迫降为 8，图捕获尺寸从 51 → 5，并发退化为串行 |
 
 ---
 
@@ -229,11 +234,11 @@ W8A8 理论计算量更小，但 **每层反量化开销 + Triton JIT 层开销*
 | 项目 | llama.cpp | vLLM (eager) |
 |------|:---:|:---:|
 | 模型权重 | ~35 GB | 28.49 GB |
-| KV Cache | FP16, ~3 GB | FP8, 11.68 GB |
+| KV Cache | FP16, ~3 GB | FP16, ~2 GB |
 | 峰值激活 | — | 2.22 GB |
 | 其他 | — | 0.39 GB |
-| **总计** | **~38 GB** | **~42.8 GB** |
-| 剩余 | 10 GB | 5.2 GB |
+| **总计** | **~38 GB** | **~33 GB** |
+| 剩余 | 10 GB | ~15 GB |
 
 ---
 
@@ -272,23 +277,24 @@ llama-server \
 
 ### 多用户 API 服务场景（未来）
 
-**推荐：vLLM W8A8 INT8 + enforce_eager**
+**推荐：vLLM W8A8 INT8 + float16 KV + enforce_eager (v0.26.0)**
 
 ```bash
 vllm serve /models/Qwen3.6-27B-Quark-W8A8-INT8 \
   --tensor-parallel-size 1 --max-model-len 4096 \
-  --gpu-memory-utilization 0.85 --trust-remote-code \
-  --host 0.0.0.0 --port 8080 --dtype float16 --enforce-eager
+  --gpu-memory-utilization 0.92 --trust-remote-code \
+  --host 0.0.0.0 --port 8080 --dtype float16 --enforce-eager \
+  --skip-mm-profiling
 ```
 
 | 指标 | 值 |
 |------|:--|
-| 单请求吞吐 | 9 tok/s |
-| C8 聚合吞吐 | **62.9 tok/s** |
-| TTFT | **0.3s** (极稳) |
-| 显存 | 42.8 GB |
+| 单请求吞吐 | 12.3 tok/s (+37% vs 9.0) |
+| C8 聚合吞吐 | **82.1 tok/s** |
+| TTFT | **0.17s** (极稳) |
+| 显存 | ~33 GB |
 
-**理由**：8 并发时聚合吞吐超过 llama.cpp 2.87x，适合同时服务多个用户。
+**理由**：8 并发时聚合吞吐超过 llama.cpp 3.75x，适合同时服务多个用户。不用 `--kv-cache-dtype fp8`（RDNA 无 FP8 硬件），不用 MTP / CUDA Graph（实测均负优化）。
 
 ---
 
@@ -297,10 +303,12 @@ vllm serve /models/Qwen3.6-27B-Quark-W8A8-INT8 \
 1. **`--dtype` 必须 float16**：RDNA 无 BF16 张量核，默认 bfloat16 导致 EngineCore 崩溃
 2. **`/etc/hosts` 缺 localhost**：Docker 容器常见问题，须用 `127.0.0.1`
 3. **Mamba 状态缓存**：Qwen3 有 48 层 GatedDeltaNet，每层需独立缓存块，`max_num_seqs` 不能过高
-4. **MTP 推测解码**：ROCm 下 MTP 的 Triton kernel 在推理时 JIT 编译，造成额外延迟
+4. **MTP 推测解码**：ROCm 下 MTP 的 Triton kernel 在推理时 JIT 编译，造成额外延迟；量化模型上接受率 0%
 5. **`--calculate-kv-scales` 有 bug**：模型卡作者确认「silently corrupts kv cache」
 6. **HF 镜像下载**：大文件 (~30GB) 易超时，用 `hf download` + `--local-dir` 可自动续传
 7. **Xet 存储**：HuggingFace 新存储后端下载超时，`snapshot_download` 比 `hf_hub_download` 更稳定
+8. **vLLM 0.25.1 卡死在 mm profiling**：多模态模型启动时 `profile_run()` 跑 ViT 编码器会挂死；升级 **0.26.0** + `--skip-mm-profiling` 解决
+9. **不要用 `--kv-cache-dtype fp8_e4m3`**：RDNA3 无 FP8 张量核，纯软件模拟拖慢 37%；默认 float16 KV 是正解
 
 ---
 

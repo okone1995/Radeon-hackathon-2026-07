@@ -119,16 +119,18 @@ Deployed both engines and benchmarked extensively. On AMD RDNA (W7900), llama.cp
 | Engine | Quantization | Throughput | TTFT |
 |--------|:---:|:---:|:---:|
 | llama.cpp | Q8_0 GGUF | **41.9 tok/s** | 0.3–14.9s (volatile) |
-| vLLM | W8A8 INT8 | 9.0 tok/s | **0.31s** (rock-stable) |
+| vLLM | W8A8 INT8 | 12.3 tok/s | **0.17s** (rock-stable) |
+
+**vLLM optimization (Aug 3, 2026):** Starting from 9.0 tok/s we found that RDNA3 (gfx1100) has **no FP8 tensor cores**, so vLLM's `--kv-cache-dtype fp8_e4m3` ran in pure software emulation. Switching to the default float16 KV cache + `--enforce-eager` + `--skip-mm-profiling` (the multimodal encoder profiling hung on 0.25.1; fixed by upgrading to **vLLM 0.26.0**) raised single-request throughput **9.0 → 12.3 tok/s (+37%)**. We also tested MTP speculative decoding (0% acceptance on the quantized model — disabled) and CUDA Graph / torch.compile (2.6 tok/s — 71% slower, RDNA lacks compile-friendly tensor cores for this hybrid GatedDeltaNet arch).
 
 **Concurrency scaling (max_tokens=128):**
 
 | Concurrency | llama.cpp aggregate | vLLM aggregate | vLLM advantage |
 |:----------:|:---:|:---:|:---:|
-| 1 | 10.0 tok/s | 9.6 tok/s | 0.96× |
-| 2 | 16.3 tok/s | 18.1 tok/s | 1.11× |
-| 4 | 20.6 tok/s | 35.1 tok/s | 1.70× |
-| 8 | 21.9 tok/s | **62.9 tok/s** | **2.87×** |
+| 1 | 10.0 tok/s | 11.4 tok/s | 1.14× |
+| 2 | 16.3 tok/s | 21.9 tok/s | 1.34× |
+| 4 | 20.6 tok/s | 45.0 tok/s | 2.18× |
+| 8 | 21.9 tok/s | **82.1 tok/s** | **3.75×** |
 
 **Decision:** llama.cpp for single-user production (our scenario). vLLM reserved for multi-user API serving.
 
@@ -192,7 +194,24 @@ Upgraded from 8K to 256K context by compressing the KV cache to Q4_0 format. Q8_
 
 ### 9. Continuous Batching Potential
 
-Although our current deployment uses llama.cpp (single-user), the vLLM benchmark demonstrates the architecture is ready for multi-user scaling: **vLLM C8 aggregate throughput of 62.9 tok/s** with near-linear scaling (6.55× on 8× load), while llama.cpp's static batching plateaus at 2.19×.
+Although our current deployment uses llama.cpp (single-user), the vLLM benchmark demonstrates the architecture is ready for multi-user scaling: **vLLM C8 aggregate throughput of 82.1 tok/s** with near-linear scaling (7.20× on 8× load), while llama.cpp's static batching plateaus at 2.19×.
+
+### 9b. vLLM on RDNA3 — Killing FP8 Emulation (special case study)
+
+**Problem:** vLLM W8A8 INT8 measured only 9.0 tok/s on W7900, far below the ~30 tok/s bandwidth ceiling. We hypothesized it was "RDNA lacks INT8 tensor cores" — **wrong** (RDNA3 has INT8 WMMA, only FP8 is missing).
+
+**Investigation (all measured, Aug 3, 2026):**
+
+| Attempt | Throughput | Verdict |
+|---------|:---:|---------|
+| Baseline: `--kv-cache-dtype fp8_e4m3` | 9.0 tok/s | FP8 KV cache runs in **pure software emulation** (no FP8 HW on RDNA3) |
+| **float16 KV + `--enforce-eager` + vLLM **0.26.0**** | **12.3 tok/s** | **+37%** — kill the emulation; 0.26.0 also fixes the mm-profiling hang |
+| + `VLLM_ATTENTION_BACKEND=TORCH_SDPA` | 12.4 tok/s | no change (GDN linear-attention bypasses standard attn kernels) |
+| + `--dtype bfloat16` | 12.2 tok/s | no change |
+| + MTP speculative (5 tokens) | 8.4 tok/s | **0% acceptance** on the quantized model — pure overhead |
+| + CUDA Graph / torch.compile | 2.6 tok/s | −71% — compile memory eats KV budget; GDN state cache serializes |
+
+**Key insight for AMD developers:** On RDNA3, decode is *bandwidth-bound*, not *compute-bound*. FP8 KV-cache emulation and Triton-JIT speculative kernels add per-layer overhead with zero hardware acceleration, so the "default" NVIDIA-oriented flags actively hurt. The AITER native MX kernels exist only for gfx942/950/1250 — **gfx1100 (W7900) has no native MX path**, which is the hardware root cause. This is why the practical optimum on W7900 is llama.cpp HIP for single-user and optimized vLLM (float16 KV) for multi-user.
 
 ### 10. AMD ROCm Full-Stack Model Engineering: From Fine-Tuning to Inference
 

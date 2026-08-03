@@ -3,30 +3,30 @@
   "backend": "vLLM 0.26.0+rocm723 (HIP/ROCm)",
   "dtype": "float16",
   "gpu": "AMD Radeon Pro W7900 (gfx1100, ROCm 7.2.4, 48GB)",
-  "timestamp": "2026-07-28",
-  "config": {"max_tokens": 128, "enforce_eager": true, "kv_cache_dtype": "fp8_e4m3", "max_model_len": 200000, "mtp": 2, "gpu_memory_utilization": 0.9},
+  "timestamp": "2026-08-03",
+  "config": {"max_tokens": 128, "enforce_eager": true, "kv_cache_dtype": "auto(float16)", "max_model_len": 4096, "gpu_memory_utilization": 0.92, "skip_mm_profiling": true},
   "results": {
     "concurrency_1": {
-      "n": 1, "wall_clock_s": 13.40, "success": 1, "fail": 0,
-      "avg_latency_s": 13.40, "aggregate_throughput_tok_s": 9.6, "total_tokens": 128
+      "n": 1, "wall_clock_s": 11.24, "success": 1, "fail": 0,
+      "avg_latency_s": 11.24, "aggregate_throughput_tok_s": 11.4, "total_tokens": 128
     },
     "concurrency_2": {
-      "n": 2, "wall_clock_s": 14.13, "success": 2, "fail": 0,
-      "avg_latency_s": 14.08, "aggregate_throughput_tok_s": 18.1, "total_tokens": 256
+      "n": 2, "wall_clock_s": 11.66, "success": 2, "fail": 0,
+      "avg_latency_s": 11.62, "aggregate_throughput_tok_s": 21.9, "total_tokens": 256
     },
     "concurrency_4": {
-      "n": 4, "wall_clock_s": 14.57, "success": 4, "fail": 0,
-      "avg_latency_s": 14.54, "aggregate_throughput_tok_s": 35.1, "total_tokens": 512
+      "n": 4, "wall_clock_s": 11.37, "success": 4, "fail": 0,
+      "avg_latency_s": 11.35, "aggregate_throughput_tok_s": 45.0, "total_tokens": 512
     },
     "concurrency_8": {
-      "n": 8, "wall_clock_s": 16.29, "success": 8, "fail": 0,
-      "avg_latency_s": 16.27, "aggregate_throughput_tok_s": 62.9, "total_tokens": 1024
+      "n": 8, "wall_clock_s": 12.47, "success": 8, "fail": 0,
+      "avg_latency_s": 12.46, "aggregate_throughput_tok_s": 82.1, "total_tokens": 1024
     }
   },
   "scaling": {
-    "baseline_throughput": 9.6,
-    "speedup_concurrency_2": 1.89,
-    "speedup_concurrency_4": 3.66,
-    "speedup_concurrency_8": 6.55
+    "baseline_throughput": 11.4,
+    "speedup_concurrency_2": 1.92,
+    "speedup_concurrency_4": 3.95,
+    "speedup_concurrency_8": 7.20
   }
 }
