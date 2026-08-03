@@ -21,6 +21,7 @@ Full source: [repo link]
 - **10+ measured optimizations** across the full stack: embedding → prompt → image → quantization → KV cache → inference engine → kernel (see [§ROCm Optimization Evidence](#amd-radeon-gpu--rocm-optimization-evidence)).
 - **125,000× training-data efficiency** (4,000 traces ≈ 500M tokens) achieved entirely on a single W7900.
 - Full AMD pipeline: **fine-tune → quantize → deploy** all on Radeon hardware.
+- **Consumer-grade deployment, not just workstation demos**: we fine-tune the **9B** (not the 27B) because it runs **3.1× faster (61.6 vs 19.6 tok/s)**, shrinks the footprint from 34 GB to **8.9 GB**, and — critically — **fits 16 GB consumer Radeon cards (6800XT)**. Cost drops from workstation-class to consumer-class, turning "one W7900 demo" into "deployable on many 6800XTs" (see [§10b](#10b-why-we-fine-tune-the-9b-speed-cost-and-consumer-grade-deployment)).
 
 ---
 
@@ -301,6 +302,29 @@ We built a **complete AMD ROCm model pipeline** — fine-tuning, quantization, a
 - **27B Q8_0** → heavy multimodal OCR + multi-step tool chaining (34GB, 19.6 tok/s)
 - **9B LoRA Fable5-tool** → fast single-step Agent decisions (8.9GB, 61.6 tok/s, fits 6800XT)
 - Same llama.cpp HIP backend · swap via `-m` flag · OpenAI-compatible API
+
+### 10b. Why We Fine-Tune the 9B: Speed, Cost, and Consumer-Grade Deployment
+
+The 27B is the highest-quality model we can fit, but it is **not** the model we ship to agents for daily decisions. We fine-tune a 9B because production reality — not benchmark scores — dictates the choice:
+
+| Dimension | 27B base | **9B Fable5-tool (ours)** |
+|-----------|:---:|:---:|
+| Throughput | 19.6 tok/s | **61.6 tok/s (3.1×)** |
+| Model size (Q8_0) | 34 GB | **8.9 GB** |
+| VRAM footprint | ~35 GB (needs W7900-class 48GB) | **fits 16 GB consumer cards (6800XT/7900GRE)** |
+| Per-token latency | ~51 ms | **~16 ms** |
+| Deployment target | workstation only | **consumer Radeon, home servers, edge** |
+| Tool-call quality (single-step) | ✅ | ✅ (matches 27B on our traces) |
+
+**Three reasons, all measured:**
+
+1. **Speed is a UX feature, not a luxury.** At 19.6 tok/s a single Agent turn feels sluggish; at 61.6 tok/s (3.1×) the same conversation feels interactive. For an Agent that calls tools round-trip, halving perceived latency per turn compounds across the whole session.
+
+2. **Cost falls off a cliff.** A 34 GB Q8_0 model plus KV cache needs a 48 GB workstation GPU. An 8.9 GB model runs on **16 GB consumer cards** — the difference between a $2,000+ workstation and a $400–700 consumer GPU. For real insurance deployments (per-branch, per-region), 9B-class is what makes multi-node rollout economically sane.
+
+3. **Consumer-grade hardware is the accessibility story.** The 27B *cannot* run on mainstream Radeon cards; the 9B can. AMD's RDNA3 line spans consumer to workstation with the same ISA, so a 9B fine-tune inherits every optimization we did on the W7900 (quantization, KV compression, engine tuning, AITER port) onto cheap consumer hardware. Fine-tuning the small model is what turns "a demo on one W7900" into "a deployable product on many 6800XTs."
+
+**The honest trade-off we disclose:** the 9B handles single-tool calls but cannot chain 2+ tool calls in one response (a parameter-scale limit, see Honest Measurement). We ship a **dual-model architecture** to keep both: the 27B for heavy multimodal/multi-step work, the 9B for the 80% fast path — and fine-tune the 9B so the common path is both fast and capable.
 
 ---
 
