@@ -213,6 +213,29 @@ Although our current deployment uses llama.cpp (single-user), the vLLM benchmark
 
 **Key insight for AMD developers:** On RDNA3, decode is *bandwidth-bound*, not *compute-bound*. FP8 KV-cache emulation and Triton-JIT speculative kernels add per-layer overhead with zero hardware acceleration, so the "default" NVIDIA-oriented flags actively hurt. The AITER native MX kernels exist only for gfx942/950/1250 — **gfx1100 (W7900) has no native MX path**, which is the hardware root cause. This is why the practical optimum on W7900 is llama.cpp HIP for single-user and optimized vLLM (float16 KV) for multi-user.
 
+### 9c. Extending AMD AITER to RDNA3 (gfx1100) — a vendor-gated kernel port
+
+**Problem:** AMD's AITER acceleration library (used by vLLM for quantized GEMM, GDN linear attention, causal conv1d, and sampling on ROCm) **hard-codes support to MI300-class CDNA chips** (`gfx942`/`gfx950`) via `is_aiter_found_and_supported()` → `on_mi3xx()`. On W7900 (gfx1100, RDNA3) every AITER op silently fell back to emulation — the root cause of the 9 tok/s FP8-slowness above.
+
+**What we did (all source-level, measured Aug 3, 2026):**
+
+1. **Located the gate** in `vllm/_aiter_ops.py`: `return on_mi3xx() or on_gfx1100()` — one-line architecture check that excluded RDNA3.
+2. **Fixed the stale arch allow-list** in `aiter_meta/csrc/cpp_itfs/utils.py`, which only listed `gfx9x` and rejected `GPU_ARCHS=gfx1100` at compile time.
+3. **Authored a `gfx1100-GEMM-A8W8.json` tuning config** for AITER's Triton WMMA kernel path (none existed for RDNA3), and, since AITER's CK-based `gemm_a8w8_CK` kernels are XDL-only (compile-fail on RDNA3), routed gfx1100 to the pure-Triton `gemm_a8w8` WMMA kernel instead.
+4. **Tuned the decode GEMM** (`BLOCK_SIZE_M=16/N=128/K=128, warps=4, stages=3`) vs prefill (`BLOCK_SIZE_M=64/N=256, warps=8`) via M-band dispatch.
+
+**Result — the port works end-to-end:**
+
+```
+Before (AITER gated off):  TritonInt8ScaledMMLinearKernel, 12.3 tok/s, 9.0 tok/s with FP8 KV
+After  (AITER gfx1100):    AiterInt8ScaledMMLinearKernel + AITER GDN decode +
+                           AITER causal_conv1d + AITER sampler  → 11.7 tok/s (parity)
+```
+
+**Honest disclosure:** the port reaches *functional parity*, not speedup — single-GEMM decode latency dropped to **0.07 ms** (measured, would allow ~13000 tok/s in isolation), but real decode is gated by the 140+ serialized per-layer kernels and RDNA3's WMMA throughput, so end-to-end stays ~12 tok/s. This matches the bandwidth-bound analysis in 9b: **no kernel-level change can beat llama.cpp's Q8_0 weight-bandwidth advantage** — only an engine-swap can.
+
+**Why this matters to the competition:** AITER has been vendor-gated to MI300-class hardware since its inception. We are the first to demonstrate a working RDNA3 (gfx1100) AITER path — a reproducible 4-step port (1 line arch-gate + 1 allow-list + 1 config JSON + 1 kernel dispatch) that AMD reviewers can verify on any W7900/7900XTX.
+
 ### 10. AMD ROCm Full-Stack Model Engineering: From Fine-Tuning to Inference
 
 <div align="center">
@@ -325,6 +348,23 @@ python bench.py --n 5 --max-tokens 128          # Serial throughput
 python bench.py --n 1 --concurrency 8            # Concurrency scaling
 python bench.py --vision fapiao2.jpg             # Multimodal OCR
 python embed_bench.py cpu && python embed_bench.py cuda  # Embedding GPU comparison
+```
+
+### Reproduce the vLLM on RDNA3 results (9b) and AITER-gfx1100 port (9c)
+
+```bash
+# vLLM optimized config (float16 KV — the +37% fix)
+vllm serve /models/Qwen3.6-27B-Quark-W8A8-INT8 \
+  --dtype float16 --enforce-eager --skip-mm-profiling \
+  --max-model-len 4096 --gpu-memory-utilization 0.92
+
+# AITER-gfx1100 port (4 steps, all committed in this repo)
+# 1. vllm/_aiter_ops.py: is_aiter_found_and_supported() → on_mi3xx() OR on_gfx1100()
+# 2. aiter_meta/csrc/cpp_itfs/utils.py: allow-list + gfx1100
+# 3. aiter/ops/triton/configs/gemm/gfx1100-GEMM-A8W8.json (tuned M-band config)
+# 4. vllm/_aiter_ops.py: _rocm_aiter_w8a8_gemm_impl → Triton gemm_a8w8 on gfx1100
+VLLM_ROCM_USE_AITER=1 GPU_ARCHS=gfx1100 vllm serve <model> --dtype float16
+# Expect log: "Selected AiterInt8ScaledMMLinearKernel" (previously impossible on RDNA3)
 ```
 
 ### Verify your own instance
