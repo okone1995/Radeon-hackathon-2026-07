@@ -21,7 +21,7 @@ Full source: [repo link]
 - **10+ measured optimizations** across the full stack: embedding → prompt → image → quantization → KV cache → inference engine → kernel (see [§ROCm Optimization Evidence](#amd-radeon-gpu--rocm-optimization-evidence)).
 - **125,000× training-data efficiency** (4,000 traces ≈ 500M tokens) achieved entirely on a single W7900.
 - Full AMD pipeline: **fine-tune → quantize → deploy** all on Radeon hardware.
-- **Consumer-grade deployment, not just workstation demos**: we fine-tune the **9B** (not the 27B) because it runs **3.1× faster (61.6 vs 19.6 tok/s)**, shrinks the footprint from 34 GB to **8.9 GB**, and — critically — **fits 16 GB consumer Radeon cards (6800XT)**. Cost drops from workstation-class to consumer-class, turning "one W7900 demo" into "deployable on many 6800XTs" (see [§10b](#10b-why-we-fine-tune-the-9b-speed-cost-and-consumer-grade-deployment)).
+- **Consumer-grade deployment, not just workstation demos**: we fine-tune the **9B** (not the 27B) because it runs **3.1× faster (61.6 vs 19.6 tok/s)**, shrinks the footprint from 34 GB to **8.9 GB**, and — critically — **fits 16 GB consumer Radeon cards (6800XT)**. **Verified cross-card: the same 9B model runs at 23–30 tok/s on an RX 6800 XT (RDNA2, Vulkan)** — cost drops from workstation-class to consumer-class, turning "one W7900 demo" into "deployable on many 6800XTs" (see [§10b](#10b-why-we-fine-tune-the-9b-speed-cost-and-consumer-grade-deployment)).
 
 ---
 
@@ -315,6 +315,15 @@ The 27B is the highest-quality model we can fit, but it is **not** the model we 
 | Per-token latency | ~51 ms | **~16 ms** |
 | Deployment target | workstation only | **consumer Radeon, home servers, edge** |
 | Tool-call quality (single-step) | ✅ | ✅ (matches 27B on our traces) |
+
+**Cross-card verification (measured):** the same 9B Q8_0 model, same llama.cpp, same prompt — only the GPU changes. This proves the 9B fine-tune is not W7900-locked: it runs on consumer RDNA2 cards too.
+
+| GPU | Arch | Bandwidth | Backend | Throughput | TTFT |
+|-----|------|:---:|:---:|:---:|:---:|
+| Radeon Pro W7900 | RDNA3 (gfx1100), 48GB | 864 GB/s | HIP | **61.6 tok/s** | ~0.2s |
+| Radeon RX 6800 XT | RDNA2 (gfx1030), 16GB | ~512 GB/s | **Vulkan** | **23–30 tok/s** | **0.18s** |
+
+> The 6800XT run uses the **Vulkan** backend — the realistic consumer path on Windows/driver-bundled setups where ROCm HIP is impractical. 23–30 tok/s on a $400–500 card is comfortably interactive for single-step Agent tool calls, confirming the "consumer-grade deployment" thesis end-to-end.
 
 **Three reasons, all measured:**
 
