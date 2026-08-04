@@ -73,6 +73,18 @@ BGE_QUERY_PREFIX = _env("BGE_QUERY_PREFIX", "为这个句子生成表示以用�
 RAG_TOP_K = int(_env("RAG_TOP_K", "3"))
 RAG_SCORE_THRESHOLD = float(_env("RAG_SCORE_THRESHOLD", "0.6"))  # 低于此且非商保创新药 → 目录外
 
+# 混合检索（BM25 关键字 + 向量语义，RRF 融合）
+RAG_HYBRID = _env("RAG_HYBRID", "true").lower() == "true"   # 是否启用 BM25+向量混合
+RAG_BM25_TOP_K = int(_env("RAG_BM25_TOP_K", "10"))          # BM25 召回数
+RAG_VECTOR_TOP_K = int(_env("RAG_VECTOR_TOP_K", "10"))      # 向量召回数
+RAG_FUSION_K = int(_env("RAG_FUSION_K", "8"))               # RRF 融合后候选数（默认 8）
+RAG_RRF_K = int(_env("RAG_RRF_K", "60"))                    # RRF 常数 k
+
+# 重排序（CrossEncoder reranker）
+RAG_RERANK = _env("RAG_RERANK", "true").lower() == "true"   # 是否启用 rerank
+RAG_RERANK_MODEL = _env("RAG_RERANK_MODEL", "BAAI/bge-reranker-base")
+RAG_RERANK_DEVICE = _env("RAG_RERANK_DEVICE", "cpu")        # reranker 设备（"cuda"/"cpu"）
+
 # ----------------------------------------------------------------------------
 # 五、理赔规则默认参数（因统筹地区/保单而异，可被目录条目覆盖）
 # ----------------------------------------------------------------------------

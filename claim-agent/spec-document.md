@@ -197,6 +197,25 @@ Original invoice photos from users can exceed 4000px and 5MB. We compress images
 
 > The 1600px threshold in `config.py` (`IMAGE_MAX_WIDTH`) automatically protects against large photos: a 3500px image → OCR 4.54s, but compressed to 1600px first → OCR ~1.1s. At 800px, the improvement is marginal (+26% vs 1079px) while visual quality begins to degrade, so 1600px is the recommended sweet spot. Applied transparently in `tools/ocr_tool.py:encode_image()`.
 
+### 7b. Hybrid Retrieval (BM25 + Vector) with Cross-Encoder Rerank
+
+The drug catalog RAG originally used single-path vector similarity (Chroma + bge-small-zh). We upgraded it to a **hybrid retrieval + rerank** pipeline:
+
+```
+Query ──┬─► BM25 keyword recall (jieba tokenized, rank_bm25)
+        └─► Vector recall (Chroma cosine, bge-small-zh on GPU)
+              └─► RRF fusion (Reciprocal Rank Fusion) → top-k candidates
+                     └─► BAAI/bge-reranker-base CrossEncoder rescore
+                            └─► threshold → in-catalog decision
+```
+
+- **BM25 keyword path** catches exact/lexical drug-name hits that embeddings blur (e.g. dose-unit variants, punctuation-differing names).
+- **Vector path** catches semantically-related but lexically-different queries (e.g. "消炎药" → injection-class antibiotics).
+- **RRF fusion** combines both rankings without tuning cross-modal score scales.
+- **Cross-Encoder rerank** (bge-reranker-base) re-scores the fused top candidates, lifting precision on ambiguous queries (e.g. "抗生素" → correct catalog entry at 0.65 vs 0.34 cosine-only).
+
+All three retrieval tiers are toggleable via config (`RAG_HYBRID`, `RAG_RERANK`, `RAG_FUSION_K`), and degrade gracefully: missing `rank_bm25`/reranker falls back to vector-only. Query-side bge prefix and GPU embedding (Optimization #1) still apply. This directly strengthens the **Local RAG** capability (Core Capabilities §5/5).
+
 ### 8. 256K Context via Q4_0 KV Cache Compression
 
 Upgraded from 8K to 256K context by compressing the KV cache to Q4_0 format. Q8_0 KV cache + MTP would OOM on 48GB.

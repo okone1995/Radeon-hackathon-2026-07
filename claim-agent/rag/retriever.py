@@ -23,6 +23,18 @@ import config as cfg
 # 无封顶的哨兵值（Chroma metadata 不允许 None）
 NO_CAP = -1.0
 
+# Rerank / BM25 依赖懒加载（缺失时优雅降级到纯向量检索）
+try:
+    import jieba
+    _HAS_JIEBA = True
+except Exception:
+    jieba = None
+    _HAS_JIEBA = False
+
+_rank_bm25 = None
+_cross_encoder = None
+_cross_lock = threading.Lock()
+
 
 # ----------------------------------------------------------------------------
 # 名称规范化与目录加载
@@ -129,10 +141,79 @@ def embed_query(text: str):
 
 
 # ----------------------------------------------------------------------------
+# 混合检索辅助：BM25 分词 / RRF 融合 / Reranker
+# ----------------------------------------------------------------------------
+def _tokenize(text: str) -> list:
+    """中文优先 jieba 分词，未安装则退化为基础切分。"""
+    s = str(text or "")
+    if _HAS_JIEBA:
+        return [t for t in jieba.cut(s) if t.strip()]
+    # 退化：按空白 + 药名常见分隔切分
+    return [t for t in re.split(r"[\s,，。;；·\-—/()（）\[\]【】]+", s) if t.strip()]
+
+
+def get_bm25():
+    """懒加载 BM25 索引（基于目录 doc_text 语料）。"""
+    global _rank_bm25
+    if _rank_bm25 is None:
+        with _cross_lock:
+            if _rank_bm25 is None:
+                from rank_bm25 import BM25Okapi
+                entries = load_catalog()
+                corpus = [_tokenize(doc_text(e)) for e in entries if doc_text(e)]
+                _rank_bm25 = BM25Okapi(corpus)
+    return _rank_bm25
+
+
+def _rrf_fuse(ranked_lists: list, k: int = None) -> dict:
+    """Reciprocal Rank Fusion：多路排序融合为 dict[doc_index] -> fused_score。
+
+    ranked_lists: 每路为 [(doc_index, score)]，doc_index 为目录条目下标。
+    """
+    k = k if k is not None else cfg.RAG_RRF_K
+    fused: dict = {}
+    for ranked in ranked_lists:
+        for rank, (idx, _score) in enumerate(ranked):
+            fused[idx] = fused.get(idx, 0.0) + 1.0 / (k + rank + 1)
+    return fused
+
+
+def get_reranker():
+    """懒加载 CrossEncoder reranker。"""
+    global _cross_encoder
+    if _cross_encoder is None:
+        with _cross_lock:
+            if _cross_encoder is None:
+                from sentence_transformers import CrossEncoder
+                _cross_encoder = CrossEncoder(cfg.RAG_RERANK_MODEL, device=cfg.RAG_RERANK_DEVICE)
+    return _cross_encoder
+
+
+def rerank(query: str, candidates: list, top_k: int) -> list:
+    """对 [entry] 候选做 CrossEncoder 重排，返回打分后的前 top_k 个 (entry, score)。
+
+    分数经 sigmoid 归一化到 (0,1)，便于与 RAG_SCORE_THRESHOLD 统一比较。
+    """
+    import math
+    if not candidates:
+        return []
+    texts = [doc_text(e) for e in candidates]
+    model = get_reranker()
+    pairs = [(query, t) for t in texts]
+    raw = model.predict(pairs, show_progress_bar=False)
+    scored = []
+    for e, s in zip(candidates, raw):
+        norm = 1.0 / (1.0 + math.exp(-float(s)))
+        scored.append((e, norm))
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return scored[:top_k]
+
+
+# ----------------------------------------------------------------------------
 # 检索器
 # ----------------------------------------------------------------------------
 class DrugCatalogRetriever:
-    """药品目录检索器：精确匹配 + 语义召回 + 阈值判定。"""
+    """药品目录检索器：精确匹配 + 混合召回(BM25+向量) + Rerank + 阈值判定。"""
 
     def __init__(self, chroma_dir: str = None, collection: str = None,
                  top_k: int = None, score_threshold: float = None):
@@ -179,6 +260,92 @@ class DrugCatalogRetriever:
                 return e
         return None
 
+    # ---- 向量召回（返回 [(entry, score)]）----
+    def _vector_recall(self, drug_name: str, top_k: int = None):
+        top_k = top_k or cfg.RAG_VECTOR_TOP_K
+        try:
+            q_emb = embed_query(drug_name)
+            res = self.collection.query(
+                query_embeddings=[q_emb],
+                n_results=top_k,
+                include=["metadatas", "distances"],
+            )
+        except Exception:
+            return []
+        metadatas = (res.get("metadatas") or [[]])[0]
+        distances = (res.get("distances") or [[]])[0]
+        out = []
+        for md, dist in zip(metadatas, distances):
+            score = max(0.0, 1.0 - float(dist))
+            entry = self._md_to_entry(md)
+            if entry is not None:
+                out.append((entry, score))
+        return out
+
+    def _md_to_entry(self, md: dict):
+        """将 Chroma metadata 还原为目录条目（按 drug_name+generic_name 反查）。"""
+        name = md.get("drug_name", "")
+        for e in load_catalog():
+            if e.get("drug_name") == name:
+                return e
+        return None
+
+    # ---- BM25 召回（返回 [(entry, score)]）----
+    def _bm25_recall(self, drug_name: str, top_k: int = None):
+        top_k = top_k or cfg.RAG_BM25_TOP_K
+        if not cfg.RAG_HYBRID:
+            return []
+        try:
+            bm = get_bm25()
+            entries = load_catalog()
+            scores = bm.get_scores(_tokenize(drug_name))
+            ranked = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+            ranked = [i for i in ranked if scores[i] > 0.0][:top_k]
+            return [(entries[i], float(scores[i])) for i in ranked]
+        except Exception:
+            return []
+
+    # ---- Rerank（返回 [(entry, rerank_score)]）----
+    def _rerank(self, drug_name: str, candidates: list, top_k: int = None):
+        top_k = top_k or self.top_k
+        if not candidates:
+            return []
+        if not cfg.RAG_RERANK:
+            return list(candidates[:top_k])
+        try:
+            return rerank(drug_name, [e for e, _s in candidates], top_k)
+        except Exception:
+            return list(candidates[:top_k])
+
+    # ---- 混合召回（BM25 + 向量 → RRF 融合）----
+    def _hybrid_recall(self, drug_name: str, top_k: int = None):
+        vec = self._vector_recall(drug_name)      # [(entry, score)]
+        bm = self._bm25_recall(drug_name)          # [(entry, score)]
+
+        # 按条目名对齐两路排名
+        order = {}
+        for e, _s in vec + bm:
+            name = e.get("drug_name")
+            if name and name not in order:
+                order[name] = len(order)
+
+        vec_ranked = [(order[e.get("drug_name")], s) for e, s in vec if e.get("drug_name") in order]
+        bm_ranked = [(order[e.get("drug_name")], s) for e, s in bm if e.get("drug_name") in order]
+
+        fused = _rrf_fuse([vec_ranked, bm_ranked])
+        if not fused:
+            return []
+
+        name_to_entry = {e.get("drug_name"): e for e, _ in vec + bm}
+        top_idx = sorted(fused.items(), key=lambda x: x[1], reverse=True)[:top_k]
+        max_f = max(fused.values()) or 1.0
+        results = []
+        for idx, fscore in top_idx:
+            name = [n for n, i in order.items() if i == idx]
+            if name and name[0] in name_to_entry:
+                results.append((name_to_entry[name[0]], fscore / max_f))
+        return results
+
     def search(self, drug_name: str, top_k: int = None) -> dict:
         """检索药品目录，返回 {query, matches:[...]}。"""
         top_k = top_k or self.top_k
@@ -192,27 +359,29 @@ class DrugCatalogRetriever:
             match["match_type"] = "exact"
             return {"query": drug_name, "matches": [match]}
 
-        # 第二层：语义召回
+        # 第二层：混合召回（BM25 + 向量，RRF 融合）→ Rerank
         try:
-            q_emb = embed_query(drug_name)
-            res = self.collection.query(
-                query_embeddings=[q_emb],
-                n_results=top_k,
-                include=["metadatas", "documents", "distances"],
-            )
+            if cfg.RAG_HYBRID:
+                candidates = self._hybrid_recall(drug_name, top_k=cfg.RAG_FUSION_K)
+            else:
+                candidates = self._vector_recall(drug_name, top_k=cfg.RAG_FUSION_K)
         except Exception as e:
             return {"query": drug_name, "matches": [], "error": f"检索失败: {e}"}
 
-        metadatas = (res.get("metadatas") or [[]])[0]
-        distances = (res.get("distances") or [[]])[0]
+        reranked = self._rerank(drug_name, candidates, top_k=top_k)
 
         matches = []
-        for md, dist in zip(metadatas, distances):
-            score = max(0.0, 1.0 - float(dist))  # 余弦距离 → 相似度
+        for entry, rscore in reranked:
+            md = to_metadata(entry)
             # 第三层：阈值判定。低于阈值且非商保创新药 → 目录外
-            in_catalog = (score >= self.score_threshold) and (md.get("category") in ("甲类", "乙类"))
-            m = _metadata_to_match(md, score=score, in_catalog=in_catalog)
-            m["match_type"] = "semantic"
+            in_catalog = (rscore >= self.score_threshold) and (md["category"] in ("甲类", "乙类"))
+            m = _metadata_to_match(md, score=rscore, in_catalog=in_catalog)
+            if cfg.RAG_RERANK:
+                m["match_type"] = "rerank"
+            elif cfg.RAG_HYBRID:
+                m["match_type"] = "hybrid"
+            else:
+                m["match_type"] = "semantic"
             matches.append(m)
 
         return {"query": drug_name, "matches": matches}
