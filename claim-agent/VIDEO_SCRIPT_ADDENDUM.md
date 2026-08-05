@@ -71,15 +71,17 @@ deployable on consumer Radeon hardware, not just workstations."
 ================================================================================
 [SCREEN] 对比卡片: 我们 4,000 traces vs Qwythos 500M tokens
 [SUBTITLE] 4,000 traces ≈ 500M tokens · 125,000× less data
-          Fine-tune the 9B: 3.1× faster, fits consumer GPUs
+          Fine-tune the 9B: 1.6× faster pure-text, 1/4 the memory, fits consumer GPUs
 
 SPEAK:
 "And the training story: our LoRA fine-tune reached tool-calling quality
 comparable to a 500-million-token community model using only 4,000 traces —
 a 125,000 times reduction in training data, done entirely on one W7900.
-We deliberately fine-tune the 9B, not the 27B: three times faster, a
-third the memory, and it runs on consumer cards. The 27B stays for heavy
-multimodal work; the 9B handles the fast path."
+We deliberately fine-tune the 9B, not the 27B: one point six times faster
+on pure text, a quarter of the memory, and it runs on consumer cards.
+On the heavy multimodal OCR path the 27B drops to sixteen to twenty tokens
+per second — so the 9B handles the fast path, and the 27B stays for the
+vision-heavy work."
 
 [ACTION] 展示 spec-document §10 / §10b 的训练对比表
 
