@@ -17,7 +17,7 @@ Full source: [repo link]
 
 **⚙️ Engineering depth — we optimized AMD ROCm hardware, to the level of handwritten kernels.**
 
-- **+30% token throughput on the AMD W7900 (RDNA3)**: vLLM on ROCm was measured at 9.0 tok/s (with FP8 KV emulation + MTP overhead); we drove it to **11.7–12.3 tok/s** by eliminating FP8 software-emulation, removing a 0%-acceptance speculative path, upgrading the engine, and — uniquely — **hand-porting AMD's AITER acceleration library to RDNA3 (gfx1100)**, a hardware class its vendor had hard-gated to MI300-series GPUs. We are the first to demonstrate a working AITER path on consumer/workstation RDNA3.
+- **+30% token throughput on the AMD W7900 (RDNA3)**: vLLM on ROCm was measured at 9.0 tok/s (with FP8 KV emulation + MTP overhead); we drove it to **11.7–12.3 tok/s** by eliminating FP8 software-emulation, removing a 0%-acceptance speculative path, upgrading the engine, and — uniquely — **closing vLLM's AITER-on-RDNA3 integration gap (gfx1100)**: vLLM's AITER path had never covered RDNA3 (only CDNA3+ and RDNA4), so we enabled it via a 4-step patch. First working AITER path in vLLM on consumer RDNA3.
 - **10+ measured optimizations** across the full stack: embedding → prompt → image → quantization → KV cache → inference engine → kernel (see [§ROCm Optimization Evidence](#amd-radeon-gpu--rocm-optimization-evidence)).
 - **125,000× training-data efficiency** (4,000 traces ≈ 500M tokens) achieved entirely on a single W7900.
 - Full AMD pipeline: **fine-tune → quantize → deploy** all on Radeon hardware.
@@ -246,13 +246,13 @@ Although our current deployment uses llama.cpp (single-user), the vLLM benchmark
 
 **Key insight for AMD developers:** On RDNA3, decode is *bandwidth-bound*, not *compute-bound*. FP8 KV-cache emulation and Triton-JIT speculative kernels add per-layer overhead with zero hardware acceleration, so the "default" NVIDIA-oriented flags actively hurt. The AITER native MX kernels exist only for gfx942/950/1250 — **gfx1100 (W7900) has no native MX path**, which is the hardware root cause. This is why the practical optimum on W7900 is llama.cpp HIP for single-user and optimized vLLM (float16 KV) for multi-user.
 
-### 9c. Extending AMD AITER to RDNA3 (gfx1100) — a vendor-gated kernel port
+### 9c. Extending AMD AITER to RDNA3 (gfx1100) — closing vLLM's integration gap
 
-**Problem:** AMD's AITER acceleration library (used by vLLM for quantized GEMM, GDN linear attention, causal conv1d, and sampling on ROCm) **hard-codes support to MI300-class CDNA chips** (`gfx942`/`gfx950`) via `is_aiter_found_and_supported()` → `on_mi3xx()`. On W7900 (gfx1100, RDNA3) every AITER op silently fell back to emulation — the root cause of the 9 tok/s FP8-slowness above.
+**Problem:** AMD's AITER library (used by vLLM for quantized GEMM, GDN linear attention, causal conv1d, and sampling on ROCm) **upstream-lists W7900 (gfx1100, RDNA3) as Experimental** (Triton kernels run; CK/ASM kernels are CDNA-only). However, **vLLM's integration layer does not expose AITER on gfx1100 at all**: `is_aiter_found_and_supported()` returns `get_cdna_version() > 2` (CDNA3+ only), and the later RDNA4 path (`on_rdna4()`) covers only gfx1201. **gfx1100 (RDNA3) falls in the gap between CDNA and RDNA4** — even the latest vLLM main has no gfx1100 AITER path. On our stack (vLLM 0.26.0 + aiter 0.1.16) every AITER op silently fell back to emulation — the root cause of the 9 tok/s FP8-slowness above.
 
 **What we did (all source-level, measured Aug 3, 2026):**
 
-1. **Located the gate** in `vllm/_aiter_ops.py`: `return on_mi3xx() or on_gfx1100()` — one-line architecture check that excluded RDNA3.
+1. **Located the gate** in `vllm/_aiter_ops.py`: `is_aiter_found_and_supported()` → `on_mi3xx()` (CDNA-only in our vLLM 0.26.0). Changed to `return on_mi3xx() or on_gfx1100()` — exposing AITER to RDNA3.
 2. **Fixed the stale arch allow-list** in `aiter_meta/csrc/cpp_itfs/utils.py`, which only listed `gfx9x` and rejected `GPU_ARCHS=gfx1100` at compile time.
 3. **Authored a `gfx1100-GEMM-A8W8.json` tuning config** for AITER's Triton WMMA kernel path (none existed for RDNA3), and, since AITER's CK-based `gemm_a8w8_CK` kernels are XDL-only (compile-fail on RDNA3), routed gfx1100 to the pure-Triton `gemm_a8w8` WMMA kernel instead.
 4. **Tuned the decode GEMM** (`BLOCK_SIZE_M=16/N=128/K=128, warps=4, stages=3`) vs prefill (`BLOCK_SIZE_M=64/N=256, warps=8`) via M-band dispatch.
@@ -267,11 +267,13 @@ Optimized (float16 KV, no MTP, 0.26.0): TritonInt8ScaledMMLinearKernel  12.3 tok
                                         sampler                         11.7 tok/s
 ```
 
-The +30% gain comes from the combination: killing FP8 software-emulation, removing a 0%-acceptance MTP path, upgrading the engine — **and hand-porting AITER to RDNA3** (this section). AITER was previously hard-disabled on gfx1100, so every one of its ops ran in emulation or fallback; after the port, AMD's native acceleration stack (quantized GEMM + GDN decode + causal conv1d + sampler) runs for the first time on consumer/workstation RDNA3.
+The +30% gain comes from the combination: killing FP8 software-emulation, removing a 0%-acceptance MTP path, upgrading the engine — **and closing vLLM's gfx1100 AITER integration gap** (this section). On our stack, AITER was gated off on gfx1100, so every one of its ops ran in emulation or fallback; after our patch, AMD's native acceleration stack (quantized GEMM + GDN decode + causal conv1d + sampler) runs on consumer/workstation RDNA3 through vLLM.
 
 **Honest disclosure (granular attribution):** on an *already-optimized* config, swapping just the linear kernel from vLLM's `TritonInt8ScaledMMLinearKernel` to the ported `AiterInt8ScaledMMLinearKernel` is performance-parity (11.7 vs 12.3 tok/s), not a further speedup — single-GEMM decode latency dropped to **0.07 ms** (measured, ~13000 tok/s in isolation), but real decode is gated by the 140+ serialized per-layer kernels and RDNA3's WMMA throughput. The 30% headline is the *whole-pipeline* result (9.0 → 11.7+); AITER's contribution is enabling the native path. This matches the bandwidth-bound analysis in 9b: **no kernel-level change can beat llama.cpp's Q8_0 weight-bandwidth advantage** — only an engine-swap can.
 
-**Why this matters to the competition:** AITER has been vendor-gated to MI300-class hardware since its inception. We are the first to demonstrate a working RDNA3 (gfx1100) AITER path — a reproducible 4-step port (1 line arch-gate + 1 allow-list + 1 config JSON + 1 kernel dispatch) that AMD reviewers can verify on any W7900/7900XTX.
+**Why this matters to the competition:** AITER upstream marks W7900 (gfx1100, RDNA3) as Experimental, but **vLLM's integration layer has never shipped a gfx1100 AITER path** — from v0.26.0 to the latest main, `is_aiter_found_and_supported()` only covers CDNA3+ and RDNA4, leaving RDNA3 in the gap. We are the first to close that gap and demonstrate a working gfx1100 AITER path in vLLM — a reproducible 4-step change (1 line arch-gate + 1 allow-list + 1 config JSON + 1 kernel dispatch) that AMD reviewers can verify on any W7900/7900XTX. This is a concrete contribution upstream vLLM can adopt.
+
+> **Verified against upstream (Aug 2026):** `ROCm/aiter` README "Supported Hardware" lists `AMD Pro W7900 · gfx1100 (RDNA3) · Experimental` (Triton kernels run; CK/ASM kernels CDNA-only). `vllm-project/vllm` `_aiter_ops.py` still exposes AITER only via `get_cdna_version() > 2` and `on_rdna4()` — no gfx1100 path.
 
 ### 10. AMD ROCm Full-Stack Model Engineering: From Fine-Tuning to Inference
 

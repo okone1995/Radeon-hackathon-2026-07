@@ -1,7 +1,10 @@
 # AITER → RDNA3 (gfx1100) Port
 
-Four source changes turn AMD's MI300-gated AITER acceleration library into a
-working RDNA3 (W7900 / gfx1100) path. Measured on Aug 3, 2026.
+Four source changes close vLLM's AITER-on-RDNA3 integration gap: vLLM's
+`is_aiter_found_and_supported()` covered CDNA3+ and (later) RDNA4, but never
+gfx1100 (RDNA3) — even though AITER upstream lists W7900 as Experimental.
+These patches enable a working RDNA3 (W7900 / gfx1100) AITER path in vLLM.
+Measured on Aug 3, 2026.
 
 ## Changes
 
