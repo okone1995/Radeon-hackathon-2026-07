@@ -20,7 +20,7 @@ PRE-FLIGHT
   # 我们的 4 步 patch 之后，AITER 在 RDNA3 上启用：
   export VLLM_ROCM_USE_AITER=1
   export GPU_ARCHS=gfx1100
-  vllm serve /models/Qwen3.6-27B-Quark-W8A8-INT8 \
+  /workspace/.venv/bin/vllm serve /models/Qwen3.6-27B-Quark-W8A8-INT8 \
     --host 0.0.0.0 --port 8081 --trust-remote-code \
     --dtype float16 --max-model-len 4096 --enforce-eager \
     --gpu-memory-utilization 0.92 --max-num-seqs 8 \
