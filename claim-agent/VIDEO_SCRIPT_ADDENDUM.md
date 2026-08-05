@@ -13,12 +13,24 @@ PRE-FLIGHT
 □ 录制: 1920×1080, EN audio, 与原视频同参数
 
 ================================================================================
-0:00–0:18  ★ AITER on RDNA3 — closing vLLM's integration gap
+0:00–0:20  ★ AITER on RDNA3 — closing vLLM's integration gap
 ================================================================================
-[SCREEN] 终端展示 vLLM 启动日志，红框标出这行:
+[SCREEN] 终端展示完整启动命令（红框圈出两个关键环境变量）+ 下方滚动出日志
+[TERMINAL] 完整命令：
+  # 我们的 4 步 patch 之后，AITER 在 RDNA3 上启用：
+  export VLLM_ROCM_USE_AITER=1
+  export GPU_ARCHS=gfx1100
+  vllm serve /models/Qwen3.6-27B-Quark-W8A8-INT8 \
+    --host 0.0.0.0 --port 8081 --trust-remote-code \
+    --dtype float16 --max-model-len 4096 --enforce-eager \
+    --gpu-memory-utilization 0.92 --max-num-seqs 8 \
+    --skip-mm-profiling
+
+  # 日志关键行（红框定格 2 秒）：
   INFO ... Selected AiterInt8ScaledMMLinearKernel for QuarkW8A8Int8
 
 [SUBTITLE] First AITER path in vLLM on RDNA3 (gfx1100)
+          VLLM_ROCM_USE_AITER=1 + GPU_ARCHS=gfx1100
           vLLM's AITER covered CDNA3+ and RDNA4 — RDNA3 was never enabled
 
 SPEAK:
@@ -31,7 +43,8 @@ arch allow-list, a gfx1100 tuning config, and a WMMA kernel route. Log
 confirms AiterInt8ScaledMMLinearKernel is live. First working AITER path
 in vLLM on consumer RDNA3 — and upstream vLLM still doesn't have this."
 
-[ACTION] 终端慢动作/静止 2 秒停留在这行日志上（评委截图点）
+[ACTION] 命令展示后，终端慢动作/静止 2 秒在日志关键行（评委截图点）
+[ACTION] 可加一行小字: 4-step patch → vllm-project/vllm#51136
 
 ================================================================================
 0:15–0:30  ★ +30% vLLM throughput on RDNA3
