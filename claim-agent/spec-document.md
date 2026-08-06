@@ -27,7 +27,7 @@ Full source: [repo link]
 
 ## Submission Contents
 
-🎬 **Demo Video:** https://youtu.be/vv2RDD9PO_c (YouTube) · https://www.bilibili.com/video/BV1Xm3U69ESG (Bilibili)
+🎬 **Demo Video:** https://youtu.be/b3sMxplzx-Q (YouTube) · https://www.bilibili.com/video/BV1Xm3U69ESG (Bilibili)
 
 | Requirement | File |
 |-------------|------|
