@@ -275,7 +275,12 @@ The +30% gain comes from the combination: killing FP8 software-emulation, removi
 
 **Why this matters to the competition:** AITER upstream marks W7900 (gfx1100, RDNA3) as Experimental, but **vLLM's integration layer has never shipped a gfx1100 AITER path** — from v0.26.0 to the latest main, `is_aiter_found_and_supported()` only covers CDNA3+ and RDNA4, leaving RDNA3 in the gap. We are the first to close that gap and demonstrate a working gfx1100 AITER path in vLLM — a reproducible 4-step change (1 line arch-gate + 1 allow-list + 1 config JSON + 1 kernel dispatch) that AMD reviewers can verify on any W7900/7900XTX. This is a concrete contribution upstream vLLM can adopt.
 
-> **Verified against upstream (Aug 2026):** `ROCm/aiter` README "Supported Hardware" lists `AMD Pro W7900 · gfx1100 (RDNA3) · Experimental` (Triton kernels run; CK/ASM kernels CDNA-only). `vllm-project/vllm` `_aiter_ops.py` still exposes AITER only via `get_cdna_version() > 2` and `on_rdna4()` — no gfx1100 path. **We reported this to vLLM upstream: [vllm-project/vllm#51136](https://github.com/vllm-project/vllm/issues/51136)** — our 4-step patch is attached there as a reference implementation.
+> **Verified against upstream (Aug 2026):** `ROCm/aiter` README "Supported Hardware" lists `AMD Pro W7900 · gfx1100 (RDNA3) · Experimental` (Triton kernels run; CK/ASM kernels CDNA-only). `vllm-project/vllm` `_aiter_ops.py` still exposes AITER only via `get_cdna_version() > 2` and `on_rdna4()` — no gfx1100 path. We reported this to both upstreams, and both confirmed the gap:
+>
+> - **vLLM** ([vllm-project/vllm#51136](https://github.com/vllm-project/vllm/issues/51136)): maintainer replied *"RDNA support on AITER is not part of vLLM roadmap"* — confirming our finding that gfx1100 is not on vLLM's AITER integration path.
+> - **AITER** ([ROCm/aiter#4604](https://github.com/ROCm/aiter/issues/4604)): opened with our working 4-step patch attached as a reference implementation and a question on gfx1100 roadmap status.
+>
+> Our patch is offered to both upstreams as a starting point for official gfx1100 AITER support.
 
 ### 10. AMD ROCm Full-Stack Model Engineering: From Fine-Tuning to Inference
 
